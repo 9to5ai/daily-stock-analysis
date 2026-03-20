@@ -223,16 +223,70 @@ class TelegramSender:
             logger.error("Telegram 图片发送异常: %s", e)
             return False
 
+    @staticmethod
+    def _convert_tables_to_text(text: str) -> str:
+        """Convert Markdown tables to clean text lists for Telegram.
+
+        Telegram doesn't render Markdown tables at all — pipe characters show
+        as raw text.  This converts any table block into a readable bullet list.
+        """
+        lines = text.split('\n')
+        out = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            # Detect table header row: starts with |
+            if line.strip().startswith('|') and '|' in line.strip()[1:]:
+                # Collect all consecutive table rows
+                table_rows = []
+                while i < len(lines) and lines[i].strip().startswith('|'):
+                    row = lines[i].strip()
+                    # Skip separator rows like |---|---|
+                    if re.match(r'^\|[\s\-:]+\|$', row.replace(' ', '')):
+                        i += 1
+                        continue
+                    cells = [c.strip() for c in row.strip('|').split('|')]
+                    table_rows.append(cells)
+                    i += 1
+                # Format: if we have a header + data rows, use "header: value" style
+                if len(table_rows) >= 2:
+                    headers = table_rows[0]
+                    for data_row in table_rows[1:]:
+                        # Simple 2-column table: "Label → Value"
+                        if len(headers) == 2 and len(data_row) >= 2:
+                            out.append(f"  • {data_row[0]}  →  {data_row[1]}")
+                        else:
+                            # Multi-column: show as "H1: V1 | H2: V2 ..."
+                            parts = []
+                            for j, cell in enumerate(data_row):
+                                h = headers[j] if j < len(headers) else ''
+                                if h and h != cell:
+                                    parts.append(f"{h}: {cell}")
+                                else:
+                                    parts.append(cell)
+                            out.append(f"  • {' | '.join(parts)}")
+                elif len(table_rows) == 1:
+                    # Single row table — just output the cells
+                    out.append(f"  • {' | '.join(table_rows[0])}")
+            else:
+                out.append(line)
+                i += 1
+        return '\n'.join(out)
+
     def _convert_to_telegram_markdown(self, text: str) -> str:
         """
         将标准 Markdown 转换为 Telegram 支持的格式
         
         Telegram Markdown 限制：
         - 不支持 # 标题
+        - 不支持表格
         - 使用 *bold* 而非 **bold**
         - 使用 _italic_ 
         """
         result = text
+
+        # Convert tables to readable text (before other transformations)
+        result = self._convert_tables_to_text(result)
         
         # 移除 # 标题标记（Telegram 不支持）
         result = re.sub(r'^#{1,6}\s+', '', result, flags=re.MULTILINE)
